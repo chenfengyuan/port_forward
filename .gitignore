@@ -26,3 +26,9 @@
 *.exe
 *.out
 *.app
+/port_forward
+
+# qmake temporay files
+*.qmake.stash
+*.pro.user
+Makefile
