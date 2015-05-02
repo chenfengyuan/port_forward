@@ -62,10 +62,20 @@ void Pipe::start(){
         read_and_write(yield, socket_1, socket_0);
     });
 }
-class Server
+
+boost::asio::ip::tcp::socket async_connect(boost::asio::io_service &io, boost::asio::yield_context yield, std::string host, std::string port){
+    boost::asio::ip::tcp::socket socket(io);
+    boost::asio::ip::tcp::resolver::query query_(host, port);
+    boost::asio::ip::tcp::resolver resolver_(io);
+    auto iter = resolver_.async_resolve(query_, yield);
+    boost::asio::async_connect(socket, iter, boost::asio::ip::tcp::resolver::iterator{}, yield);
+    return socket;
+}
+
+class AcceptServer
 {
 public:
-    Server(boost::asio::io_service& io_service, std::string const & host,std::string const & port,std::string const & dst_host, std::string const & dst_port)
+    AcceptServer(boost::asio::io_service& io_service, std::string const & host,std::string const & port,std::string const & dst_host, std::string const & dst_port)
         : acceptor_(io_service), socket_(io_service), dst_host_(dst_host), dst_port_(dst_port)
     {
         try{
@@ -96,11 +106,7 @@ private:
             {
                 auto & io= socket_.get_io_service();
                 auto func = [socket = std::move(socket_), dst_host=dst_host_, dst_port=dst_port_](boost::asio::yield_context yield) mutable{
-                    boost::asio::ip::tcp::socket socket_dst(socket.get_io_service());
-                    boost::asio::ip::tcp::resolver::query query_(dst_host, dst_port);
-                    boost::asio::ip::tcp::resolver resolver_(socket_dst.get_io_service());
-                    auto iter = resolver_.async_resolve(query_, yield);
-                    boost::asio::async_connect(socket_dst, iter, boost::asio::ip::tcp::resolver::iterator{}, yield);
+                    auto socket_dst = async_connect(socket.get_io_service(), yield, dst_host, dst_port);
                     std::make_shared<Pipe>(std::move(socket), std::move(socket_dst))->start();
                 };
                 boost::asio::spawn(io, CoroutineWrapper<decltype(func)>(std::move(func)));
@@ -137,7 +143,7 @@ int main(int argc, char *argv[])
         std::vector<thread_ptr> threads;
 
         boost::asio::io_service io_service_;
-        Server s(io_service_, listen_host, listen_port, dst_host, dst_port);
+        AcceptServer s(io_service_, listen_host, listen_port, dst_host, dst_port);
         for(auto i = 0; i< num_of_threads;++i){
             thread_ptr thread(new boost::thread(boost::bind(&boost::asio::io_service::run, &io_service_)));
             threads.push_back(thread);
