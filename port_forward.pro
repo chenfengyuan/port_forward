@@ -22,6 +22,7 @@ contains(QMAKE_HOST.arch, x86_64){
     }
     darwin{
         QMAKE_MAC_SDK=macosx10.9
+        QMAKE_CXXFLAGS += -Wno-c++14-extensions
         INCLUDEPATH += "/usr/local/Cellar/boost/1.56.0/include/"
         LIBS += -L/usr/local/Cellar/boost/1.56.0/lib -lboost_thread-mt -lboost_system-mt -lboost_coroutine-mt -lboost_context-mt -lboost_regex-mt
     }
