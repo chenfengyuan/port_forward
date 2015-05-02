@@ -75,6 +75,12 @@ boost::asio::ip::tcp::socket async_connect(boost::asio::io_service &io, boost::a
     return socket;
 }
 
+void output_char_array(std::basic_ostream<char> &out, unsigned char * arr, int len){
+    for(int i=0;i<len;++i){
+        out << static_cast<int>(arr[i]);
+    }
+}
+
 class SOCKS5Server
 {
 public:
@@ -143,7 +149,9 @@ private:
                         unsigned char port_buf[2];
                         boost::asio::async_read(socket, boost::asio::buffer(port_buf), yield);
                         int port = (port_buf[0] << 8) + port_buf[1];
+//                        std::cerr << dst_ip.to_string() << " " << std::to_string(port) << "\n";
                         boost::asio::ip::tcp::socket dst_socket = async_connect(socket.get_io_service(), yield, dst_ip.to_string(), std::to_string(port));
+//                        std::cerr << "connected\n";
                         unsigned char buf_[] = {0x05, 0x00, 0x00, 0x01, ip_buf[0], ip_buf[1], ip_buf[2], ip_buf[3], port_buf[0], port_buf[1]};
                         boost::asio::async_write(socket, boost::asio::buffer(buf_), yield);
                         std::make_shared<Pipe>(std::move(socket), std::move(dst_socket))->start();
@@ -151,11 +159,14 @@ private:
                         unsigned char len_buf[1];
                         boost::asio::async_read(socket, boost::asio::buffer(len_buf), yield);
                         int len = static_cast<int>(len_buf[0]);
-                        char address[255];
+                        unsigned char address[255];
                         boost::asio::async_read(socket, boost::asio::buffer(address, len + 2), yield);
+//                        output_char_array(std::cerr, address, 255);
                         std::string host(std::begin(address), std::begin(address) + len);
                         int port = (address[len] << 8) + address[len + 1];
+//                        std::cerr << host << " " << std::to_string(port) << "\n";
                         boost::asio::ip::tcp::socket dst_socket = async_connect(socket.get_io_service(), yield, host, std::to_string(port));
+//                        std::cerr << "connected\n";
                         unsigned char buf[] = {0x05, 0x00, 0x00, 0x03, len_buf[0]};
                         boost::asio::async_write(socket, boost::asio::buffer(buf), yield);
                         boost::asio::async_write(socket, boost::asio::buffer(address, len + 2), yield);
