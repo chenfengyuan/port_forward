@@ -8,6 +8,8 @@
 #endif
 #include <algorithm>
 #include <iterator>
+#include <boost/regex.hpp>
+#include <sstream>
 
 template<typename T>
 struct CoroutineWrapper{
@@ -19,10 +21,28 @@ struct CoroutineWrapper{
             return func_(yield);
         }
         catch(boost::system::system_error const & e){
+#if PORT_FORWARD_ENABLE_STACK_TRACE
+            print_stacktrace();
+#endif
             std::cerr << "CoroutineWrapper Exception: " << e.what() << "(" << e.code() << ")\n";
         }
     }
 };
+
+std::string search(boost::regex const & pattern, boost::asio::streambuf & buf){
+    typedef typename boost::asio::streambuf::const_buffers_type const_buffers_type;
+    typedef boost::asio::buffers_iterator<const_buffers_type> iterator;
+    const_buffers_type buffers = buf.data();
+    iterator begin = iterator::begin(buffers);
+    iterator end = iterator::end(buffers);
+    boost::match_results<iterator> match_results;
+    boost::regex_search(begin, end, match_results, pattern);
+    if(! match_results[0].matched)
+        return "";
+    else
+        return match_results[0].str();
+}
+
 class Pipe : public std::enable_shared_from_this<Pipe>{
 public:
     using socket = boost::asio::ip::tcp::socket;
@@ -36,11 +56,24 @@ void Pipe::start(){
 //    std::cerr << "start\n";
     auto self = shared_from_this();
     auto read_and_write = [self](boost::asio::yield_context yield, socket & socket_src, socket & socket_dst){
+//        const boost::regex pattern("Content-Disposition: attachment;[^\r]+(?=\r\n)", boost::regex::perl);
+        const boost::regex pattern("GET /.*HTTP/\\d\\.\\d\r\n.*\r\n\r\n", boost::regex::perl);
         std::vector<char> buf;
+        boost::asio::streambuf search_buf;
+        std::ostream os(&search_buf);
         buf.resize(4096);
         while(true){
             try{
                 auto length = socket_src.async_read_some(boost::asio::buffer(buf), yield);
+                os.write(buf.data(), length);
+                auto result = search(pattern, search_buf);
+                if(result.length() > 1){
+                    std::cout << result << std::endl;
+                    search_buf.consume(search_buf.size());
+                }
+                if(search_buf.size() > buf.size() * 2){
+                    search_buf.consume(search_buf.size() - buf.size() * 2);
+                }
                 boost::asio::async_write(socket_dst, boost::asio::buffer(buf.data(), length), yield);
             }catch(const boost::system::system_error &e){
 //                std::cerr << "normal exit:" << e.what() << "\n";

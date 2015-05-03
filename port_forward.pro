@@ -16,7 +16,7 @@ contains(QMAKE_HOST.arch, armv6l){
 }
 contains(QMAKE_HOST.arch, x86_64){
     linux{
-        QMAKE_CXXFLAGS += -Wextra -Wall -DBOOST_USE_VALGRIND -isystem /home/chenfengyuan/.local_boost_1_57/include/ -DPORT_FORWARD_ENABLE_STACK_TRACE2=1
+        QMAKE_CXXFLAGS += -Wextra -Wall -DBOOST_USE_VALGRIND -isystem /home/chenfengyuan/.local_boost_1_57/include/ -DPORT_FORWARD_ENABLE_STACK_TRACE=1
         INCLUDEPATH += /home/chenfengyuan/.local_boost_1_57/include/
         LIBS += -L/home/chenfengyuan/.local_boost_1_57/lib -lpthread -lboost_thread -lboost_system -lboost_coroutine -lboost_context -lboost_regex
         LIBS += -rdynamic
