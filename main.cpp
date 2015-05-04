@@ -50,17 +50,37 @@ class RequestFilter{
     std::ostream response_os{&response_buf};
     static const boost::regex request_pattern;
     static const boost::regex response_pattern;
+    std::string request{};
 public:
     void add_request_content(std::vector<char> buf, std::size_t len){
         request_os.write(buf.data(), len);
         auto result = search(request_pattern, request_buf);
+        if(result.length() > 0){
+//            std::cout << result << std::endl;
+            request = result;
+            request_buf.consume(request_buf.size());
+        }
+        if(request_buf.size() > 4096 * 3){
+            request_buf.consume(4096);
+        }
     }
     void add_response_content(std::vector<char> buf, std::size_t len){
         response_os.write(buf.data(), len);
+        auto result = search(response_pattern, response_buf);
+        if(result.length() > 0){
+            if(request.length() > 0){
+                std::cout << request << std::endl;
+            }
+            response_buf.consume(response_buf.size());
+            request_buf.consume(request_buf.size());
+        }
+        if(response_buf.size() > 4096 * 3){
+            response_buf.consume(4096);
+        }
     }
 };
-const boost::regex request_pattern{"GET /.*HTTP/\\d\\.\\d\r\n.*\r\n\r\n", boost::regex::perl};
-const boost::regex response_pattern{"Content-Disposition: +attachment;filename="};
+const boost::regex RequestFilter::request_pattern{"GET /.*HTTP/\\d\\.\\d\r\n.*\r\n\r\n", boost::regex::perl};
+const boost::regex RequestFilter::response_pattern{"Content-Disposition: +attachment;filename="};
 
 class Pipe : public std::enable_shared_from_this<Pipe>{
 public:
@@ -70,28 +90,23 @@ public:
     void start();
     socket socket_0, socket_1;
     boost::asio::strand strand_;
+    RequestFilter filter{};
 };
 void Pipe::start(){
 //    std::cerr << "start\n";
     auto self = shared_from_this();
-    auto read_and_write = [self](boost::asio::yield_context yield, socket & socket_src, socket & socket_dst){
+    auto read_and_write = [self, this](boost::asio::yield_context yield, socket & socket_src, socket & socket_dst, bool request_part){
 //        const boost::regex pattern("Content-Disposition: attachment;[^\r]+(?=\r\n)", boost::regex::perl);
         const boost::regex pattern("GET /.*HTTP/\\d\\.\\d\r\n.*\r\n\r\n", boost::regex::perl);
         std::vector<char> buf;
-        boost::asio::streambuf search_buf;
-        std::ostream os(&search_buf);
         buf.resize(4096);
         while(true){
             try{
                 auto length = socket_src.async_read_some(boost::asio::buffer(buf), yield);
-                os.write(buf.data(), length);
-                auto result = search(pattern, search_buf);
-                if(result.length() > 1){
-                    std::cout << result << std::endl;
-                    search_buf.consume(search_buf.size());
-                }
-                if(search_buf.size() > buf.size() * 2){
-                    search_buf.consume(search_buf.size() - buf.size() * 2);
+                if(request_part){
+                    filter.add_request_content(buf, length);
+                }else{
+                    filter.add_response_content(buf, length);
                 }
                 boost::asio::async_write(socket_dst, boost::asio::buffer(buf.data(), length), yield);
             }catch(const boost::system::system_error &e){
@@ -113,10 +128,10 @@ void Pipe::start(){
         }
     };
     boost::asio::spawn(strand_, [this, read_and_write](boost::asio::yield_context yield){
-        read_and_write(yield, socket_0, socket_1);
+        read_and_write(yield, socket_0, socket_1, true);
     });
     boost::asio::spawn(strand_, [this, read_and_write](boost::asio::yield_context yield){
-        read_and_write(yield, socket_1, socket_0);
+        read_and_write(yield, socket_1, socket_0, false);
     });
 }
 
