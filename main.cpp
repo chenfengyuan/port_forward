@@ -113,7 +113,7 @@ public:
     }
 };
 const boost::regex RequestFilter::request_pattern{"GET /.*HTTP/\\d\\.\\d\r\n.*\r\n\r\n", boost::regex::perl};
-const boost::regex RequestFilter::response_pattern{"Content-Disposition: +attachment; *filename="};
+const boost::regex RequestFilter::response_pattern{"Content-Disposition: +attachment; *filename=", boost::regex::perl};
 
 class Pipe : public std::enable_shared_from_this<Pipe>{
 public:
