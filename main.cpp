@@ -6,6 +6,8 @@
 #if PORT_FORWARD_ENABLE_STACK_TRACE
 #include "stacktrace.h"
 #endif
+#include <algorithm>
+#include <iterator>
 
 template<typename T>
 struct CoroutineWrapper{
@@ -65,10 +67,132 @@ void Pipe::start(){
         read_and_write(yield, socket_1, socket_0);
     });
 }
-class Server
+
+boost::asio::ip::tcp::socket async_connect(boost::asio::io_service &io, boost::asio::yield_context yield, std::string host, std::string port){
+    boost::asio::ip::tcp::socket socket(io);
+    boost::asio::ip::tcp::resolver::query query_(host, port);
+    boost::asio::ip::tcp::resolver resolver_(io);
+    auto iter = resolver_.async_resolve(query_, yield);
+    boost::asio::async_connect(socket, iter, boost::asio::ip::tcp::resolver::iterator{}, yield);
+    return socket;
+}
+
+void output_char_array(std::basic_ostream<char> &out, unsigned char * arr, int len){
+    for(int i=0;i<len;++i){
+        out << static_cast<int>(arr[i]);
+    }
+}
+
+class SOCKS5Server
 {
 public:
-    Server(boost::asio::io_service& io_service, std::string const & host,std::string const & port,std::string const & dst_host, std::string const & dst_port)
+    SOCKS5Server(boost::asio::io_service& io_service, std::string const & host,std::string const & port)
+        : acceptor_(io_service), socket_(io_service)
+    {
+        try{
+            boost::asio::ip::tcp::endpoint endpoint(boost::asio::ip::address::from_string(host), std::atoi(port.c_str()));
+            acceptor_.open(endpoint.protocol());
+            acceptor_.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
+            acceptor_.bind(endpoint);
+            acceptor_.listen();
+        }catch(std::exception const &e){
+            std::cerr << "ERROR : Failed to bind address" << std::endl;
+            std::cerr << e.what() << std::endl;
+        }
+
+        do_accept();
+    }
+
+    unsigned short get_port(void){
+        return acceptor_.local_endpoint().port();
+    }
+
+private:
+    void do_accept()
+    {
+        acceptor_.async_accept(socket_,
+                               [this](boost::system::error_code ec)
+        {
+            if (!ec)
+            {
+                auto & io= socket_.get_io_service();
+                auto func = [socket = std::move(socket_)](boost::asio::yield_context yield) mutable{
+                    {
+                        char buf[2];
+                        boost::asio::async_read(socket, boost::asio::buffer(buf), yield);
+                        if(buf[0] != 5){
+                            std::cerr << "ERROR: Only Support SOCKS5\n";
+                            return;
+                        }
+                        int n = buf[1];
+                        std::vector<char> methods(n);
+                        boost::asio::async_read(socket, boost::asio::buffer(methods), yield);
+                        if(std::find(std::begin(methods), std::end(methods), '\x00') == std::end(methods)){
+                            char buf[] = {'\x05', '\xff'};
+                            boost::asio::async_write(socket,boost::asio::buffer(buf), yield);
+                            std::cerr << "ERROR: only support \"No authentication\" authentication\n";
+                            return;
+                        }else{
+                            char buf[] = {'\x05', '\x00'};
+                            boost::asio::async_write(socket, boost::asio::buffer(buf), yield);
+                        }
+                    }
+                    unsigned char buf[32];
+                    socket.async_read_some(boost::asio::buffer(buf, 4), yield);
+                    if (buf[0] != 0x05 || buf[1] != 0x01){
+                        char buf[] = {0x05, 0x08};
+                        boost::asio::async_write(socket, boost::asio::buffer(buf), yield);
+                        return;
+                    }
+                    if (buf[3] == 0x01){
+                        boost::asio::ip::address_v4::bytes_type ip_buf;
+                        boost::asio::async_read(socket, boost::asio::buffer(ip_buf), yield);
+                        boost::asio::ip::address_v4 dst_ip(ip_buf);
+                        unsigned char port_buf[2];
+                        boost::asio::async_read(socket, boost::asio::buffer(port_buf), yield);
+                        int port = (port_buf[0] << 8) + port_buf[1];
+//                        std::cerr << dst_ip.to_string() << " " << std::to_string(port) << "\n";
+                        boost::asio::ip::tcp::socket dst_socket = async_connect(socket.get_io_service(), yield, dst_ip.to_string(), std::to_string(port));
+//                        std::cerr << "connected\n";
+                        unsigned char buf_[] = {0x05, 0x00, 0x00, 0x01, ip_buf[0], ip_buf[1], ip_buf[2], ip_buf[3], port_buf[0], port_buf[1]};
+                        boost::asio::async_write(socket, boost::asio::buffer(buf_), yield);
+                        std::make_shared<Pipe>(std::move(socket), std::move(dst_socket))->start();
+                    }else if(buf[3] == 0x03){
+                        unsigned char len_buf[1];
+                        boost::asio::async_read(socket, boost::asio::buffer(len_buf), yield);
+                        int len = static_cast<int>(len_buf[0]);
+                        unsigned char address[255];
+                        boost::asio::async_read(socket, boost::asio::buffer(address, len + 2), yield);
+//                        output_char_array(std::cerr, address, 255);
+                        std::string host(std::begin(address), std::begin(address) + len);
+                        int port = (address[len] << 8) + address[len + 1];
+//                        std::cerr << host << " " << std::to_string(port) << "\n";
+                        boost::asio::ip::tcp::socket dst_socket = async_connect(socket.get_io_service(), yield, host, std::to_string(port));
+//                        std::cerr << "connected\n";
+                        unsigned char buf[] = {0x05, 0x00, 0x00, 0x03, len_buf[0]};
+                        boost::asio::async_write(socket, boost::asio::buffer(buf), yield);
+                        boost::asio::async_write(socket, boost::asio::buffer(address, len + 2), yield);
+                        std::make_shared<Pipe>(std::move(socket), std::move(dst_socket))->start();
+                    }else{
+                        unsigned char buf[] = {0x05, 0x08};
+                        boost::asio::async_write(socket, boost::asio::buffer(buf), yield);
+                    }
+                };
+                boost::asio::spawn(io, CoroutineWrapper<decltype(func)>(std::move(func)));
+            }
+
+            do_accept();
+        });
+    }
+
+    boost::asio::ip::tcp::acceptor acceptor_;
+    boost::asio::ip::tcp::socket socket_;
+};
+
+class AcceptServer
+{
+public:
+    AcceptServer(boost::asio::io_service& io_service, std::string const & host,std::string const & port,std::string const & dst_host, std::string const & dst_port)
         : acceptor_(io_service), socket_(io_service), dst_host_(dst_host), dst_port_(dst_port)
     {
         try{
@@ -104,11 +228,7 @@ private:
             {
                 auto & io= socket_.get_io_service();
                 auto func = [socket = std::move(socket_), dst_host=dst_host_, dst_port=dst_port_](boost::asio::yield_context yield) mutable{
-                    boost::asio::ip::tcp::socket socket_dst(socket.get_io_service());
-                    boost::asio::ip::tcp::resolver::query query_(dst_host, dst_port);
-                    boost::asio::ip::tcp::resolver resolver_(socket_dst.get_io_service());
-                    auto iter = resolver_.async_resolve(query_, yield);
-                    boost::asio::async_connect(socket_dst, iter, boost::asio::ip::tcp::resolver::iterator{}, yield);
+                    auto socket_dst = async_connect(socket.get_io_service(), yield, dst_host, dst_port);
                     std::make_shared<Pipe>(std::move(socket), std::move(socket_dst))->start();
                 };
                 boost::asio::spawn(io, CoroutineWrapper<decltype(func)>(std::move(func)));
@@ -127,33 +247,41 @@ private:
 int main(int argc, char *argv[])
 {
     try{
-        if(argc < 5){
-            std::cout << "Usage: " << argv[0] << " listen_host listen_port destination_host destination_port [threads]" << std::endl;
+        if(argc >= 5){
+            auto listen_host = argv[1];
+            auto listen_port = argv[2];
+            auto dst_host = argv[3];
+            auto dst_port = argv[4];
+            auto num_of_threads = 1;
+            if(argc == 6){
+                num_of_threads = std::atoi(argv[5]);
+            }
+            num_of_threads--;
+
+            using thread_ptr = std::shared_ptr<boost::thread>;
+            std::vector<thread_ptr> threads;
+
+            boost::asio::io_service io_service_;
+            AcceptServer s(io_service_, listen_host, listen_port, dst_host, dst_port);
+            for(auto i = 0; i< num_of_threads;++i){
+                thread_ptr thread(new boost::thread(boost::bind(&boost::asio::io_service::run, &io_service_)));
+                threads.push_back(thread);
+            }
+            for(auto i = 0;i<num_of_threads;++i){
+                threads[i]->join();
+            }
+            io_service_.run();
+        }else if(argc == 3){
+            auto listen_host = argv[1];
+            auto listen_port = argv[2];
+
+            boost::asio::io_service io_service_;
+            SOCKS5Server s(io_service_, listen_host, listen_port);
+            io_service_.run();
+        }else{
+            std::cout << "Usage: " << argv[0] << " listen_host listen_port [destination_host destination_port [threads]]" << std::endl;
             return 1;
         }
-        auto listen_host = argv[1];
-        auto listen_port = argv[2];
-        auto dst_host = argv[3];
-        auto dst_port = argv[4];
-        auto num_of_threads = 1;
-        if(argc == 6){
-            num_of_threads = std::atoi(argv[5]);
-        }
-        num_of_threads--;
-
-        using thread_ptr = std::shared_ptr<boost::thread>;
-        std::vector<thread_ptr> threads;
-
-        boost::asio::io_service io_service_;
-        Server s(io_service_, listen_host, listen_port, dst_host, dst_port);
-        for(auto i = 0; i< num_of_threads;++i){
-            thread_ptr thread(new boost::thread(boost::bind(&boost::asio::io_service::run, &io_service_)));
-            threads.push_back(thread);
-        }
-        for(auto i = 0;i<num_of_threads;++i){
-            threads[i]->join();
-        }
-        io_service_.run();
         return 0;
     }catch(std::exception const &e){
         std::cerr << e.what() << std::endl;
