@@ -43,6 +43,25 @@ std::string search(boost::regex const & pattern, boost::asio::streambuf & buf){
         return match_results[0].str();
 }
 
+class RequestFilter{
+    boost::asio::streambuf request_buf{};
+    std::ostream request_os{&request_buf};
+    boost::asio::streambuf response_buf{};
+    std::ostream response_os{&response_buf};
+    static const boost::regex request_pattern;
+    static const boost::regex response_pattern;
+public:
+    void add_request_content(std::vector<char> buf, std::size_t len){
+        request_os.write(buf.data(), len);
+        auto result = search(request_pattern, request_buf);
+    }
+    void add_response_content(std::vector<char> buf, std::size_t len){
+        response_os.write(buf.data(), len);
+    }
+};
+const boost::regex request_pattern{"GET /.*HTTP/\\d\\.\\d\r\n.*\r\n\r\n", boost::regex::perl};
+const boost::regex response_pattern{"Content-Disposition: +attachment;filename="};
+
 class Pipe : public std::enable_shared_from_this<Pipe>{
 public:
     using socket = boost::asio::ip::tcp::socket;
