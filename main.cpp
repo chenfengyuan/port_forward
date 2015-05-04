@@ -43,6 +43,80 @@ std::string search(boost::regex const & pattern, boost::asio::streambuf & buf){
         return match_results[0].str();
 }
 
+std::string encode(std::string src){
+    std::ostringstream t(std::ios::out | std::ios::binary);
+    t << "'";
+    std::ostream_iterator<char, char> oi(t);
+    boost::regex_replace(oi, src.begin(), src.end(), boost::regex("'"), R"a('"'"')a", boost::match_default | boost::format_all);
+    t << "'";
+    return t.str();
+}
+
+std::string convert_request_to_curl_cmd(std::string in){
+    std::ostringstream out;
+    boost::regex pattern("^GET +(/[^ ]+)", boost::regex::perl);
+    boost::match_results<std::string::iterator> match_results;
+    boost::regex_search(in.begin(), in.end(), match_results, pattern);
+    auto url = match_results[1].str();
+    pattern = "Host: +([^ \r\n]+)";
+    boost::regex_search(in.begin(), in.end(), match_results, pattern);
+    auto host = match_results[1].str();
+    url = "http://" + host + url;
+    out << "curl " << encode(url);
+    pattern = boost::regex("^[^:\r\n]+: +(?:[^\r\n]+)$", boost::regex::perl);
+    auto start = in.begin();
+    auto end = in.end();
+    while(boost::regex_search(start, end, match_results, pattern)){
+        if(match_results[0].matched){
+//            std::cout << match_results[0].str() << std::endl;
+            out << "-H " << encode(match_results[0].str()) << " ";
+//            std::cout << match_results.position() << " " << match_results[0].length() << std::endl;
+            start += match_results.position() + match_results[0].length();
+        }
+    }
+    out << "--compressed";
+    return out.str();
+}
+
+class RequestFilter{
+    boost::asio::streambuf request_buf{};
+    std::ostream request_os{&request_buf};
+    boost::asio::streambuf response_buf{};
+    std::ostream response_os{&response_buf};
+    static const boost::regex request_pattern;
+    static const boost::regex response_pattern;
+    std::string request{};
+public:
+    void add_request_content(std::vector<char> buf, std::size_t len){
+        request_os.write(buf.data(), len);
+        auto result = search(request_pattern, request_buf);
+        if(result.length() > 0){
+//            std::cout << result << std::endl;
+            request = result;
+            request_buf.consume(request_buf.size());
+        }
+        if(request_buf.size() > 4096 * 3){
+            request_buf.consume(4096);
+        }
+    }
+    void add_response_content(std::vector<char> buf, std::size_t len){
+        response_os.write(buf.data(), len);
+        auto result = search(response_pattern, response_buf);
+        if(result.length() > 0){
+            if(request.length() > 0){
+                std::cout << convert_request_to_curl_cmd(request) << std::endl;
+            }
+            response_buf.consume(response_buf.size());
+            request_buf.consume(request_buf.size());
+        }
+        if(response_buf.size() > 4096 * 3){
+            response_buf.consume(4096);
+        }
+    }
+};
+const boost::regex RequestFilter::request_pattern{"GET /.*HTTP/\\d\\.\\d\r\n.*\r\n\r\n", boost::regex::perl};
+const boost::regex RequestFilter::response_pattern{"Content-Disposition: +attachment;filename="};
+
 class Pipe : public std::enable_shared_from_this<Pipe>{
 public:
     using socket = boost::asio::ip::tcp::socket;
@@ -51,28 +125,23 @@ public:
     void start();
     socket socket_0, socket_1;
     boost::asio::strand strand_;
+    RequestFilter filter{};
 };
 void Pipe::start(){
 //    std::cerr << "start\n";
     auto self = shared_from_this();
-    auto read_and_write = [self](boost::asio::yield_context yield, socket & socket_src, socket & socket_dst){
+    auto read_and_write = [self, this](boost::asio::yield_context yield, socket & socket_src, socket & socket_dst, bool request_part){
 //        const boost::regex pattern("Content-Disposition: attachment;[^\r]+(?=\r\n)", boost::regex::perl);
         const boost::regex pattern("GET /.*HTTP/\\d\\.\\d\r\n.*\r\n\r\n", boost::regex::perl);
         std::vector<char> buf;
-        boost::asio::streambuf search_buf;
-        std::ostream os(&search_buf);
         buf.resize(4096);
         while(true){
             try{
                 auto length = socket_src.async_read_some(boost::asio::buffer(buf), yield);
-                os.write(buf.data(), length);
-                auto result = search(pattern, search_buf);
-                if(result.length() > 1){
-                    std::cout << result << std::endl;
-                    search_buf.consume(search_buf.size());
-                }
-                if(search_buf.size() > buf.size() * 2){
-                    search_buf.consume(search_buf.size() - buf.size() * 2);
+                if(request_part){
+                    filter.add_request_content(buf, length);
+                }else{
+                    filter.add_response_content(buf, length);
                 }
                 boost::asio::async_write(socket_dst, boost::asio::buffer(buf.data(), length), yield);
             }catch(const boost::system::system_error &e){
@@ -94,10 +163,10 @@ void Pipe::start(){
         }
     };
     boost::asio::spawn(strand_, [this, read_and_write](boost::asio::yield_context yield){
-        read_and_write(yield, socket_0, socket_1);
+        read_and_write(yield, socket_0, socket_1, true);
     });
     boost::asio::spawn(strand_, [this, read_and_write](boost::asio::yield_context yield){
-        read_and_write(yield, socket_1, socket_0);
+        read_and_write(yield, socket_1, socket_0, false);
     });
 }
 
