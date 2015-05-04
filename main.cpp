@@ -68,10 +68,8 @@ std::string convert_request_to_curl_cmd(std::string in){
     auto end = in.end();
     while(boost::regex_search(start, end, match_results, pattern)){
         if(match_results[0].matched){
-//            std::cout << match_results[0].str() << std::endl;
-            out << "-H " << encode(match_results[0].str()) << " ";
-//            std::cout << match_results.position() << " " << match_results[0].length() << std::endl;
-            start += match_results.position() + match_results[0].length();
+            out << "-H " << encode(match_results.str()) << " ";
+            start += match_results.position() + match_results.length();
         }
     }
     out << "--compressed";
