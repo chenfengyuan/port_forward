@@ -3,6 +3,10 @@
 #include <boost/asio/spawn.hpp>
 #include <boost/thread.hpp>
 #include <mutex>
+#if PORT_FORWARD_ENABLE_STACK_TRACE
+#include "stacktrace.h"
+#endif
+
 template<typename T>
 struct CoroutineWrapper{
     T func_;
@@ -19,7 +23,6 @@ struct CoroutineWrapper{
 };
 class Pipe : public std::enable_shared_from_this<Pipe>{
 public:
-    bool errorp{false};
     using socket = boost::asio::ip::tcp::socket;
     Pipe(socket && socket0, socket && socket1):socket_0(std::move(socket0)), socket_1(std::move(socket1)), strand_(socket_0.get_io_service()){
     }
@@ -74,12 +77,17 @@ public:
             acceptor_.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
             acceptor_.bind(endpoint);
             acceptor_.listen();
+            do_accept();
         }catch(std::exception const &e){
+#if PORT_FORWARD_ENABLE_STACK_TRACE
+            print_stacktrace();
+            std::cerr << "ERROR : Failed to bind address" << std::endl;
+            throw;
+#else
             std::cerr << "ERROR : Failed to bind address" << std::endl;
             std::cerr << e.what() << std::endl;
+#endif
         }
-
-        do_accept();
     }
 
     unsigned short get_port(void){
