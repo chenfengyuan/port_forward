@@ -10,6 +10,8 @@
 #include <iterator>
 #include <boost/regex.hpp>
 #include <sstream>
+#include <unordered_map>
+#include <chrono>
 
 template<typename T>
 struct CoroutineWrapper{
@@ -29,7 +31,45 @@ struct CoroutineWrapper{
     }
 };
 
-std::string search(boost::regex const & pattern, boost::asio::streambuf & buf){
+class RedirectTrace{
+    std::vector<std::unordered_map<std::string, std::string>> dicts{};
+    std::chrono::time_point<std::chrono::system_clock> next_rotate_and_clear_point{std::chrono::system_clock::now()};
+    std::chrono::seconds duration{60};
+    std::mutex mutex;
+
+    void rotate_and_clear(){
+        if(std::chrono::system_clock::now() > next_rotate_and_clear_point){
+            dicts[0].clear();
+            std::rotate(std::begin(dicts), std::begin(dicts) + 1, std::end(dicts));
+            next_rotate_and_clear_point += duration;
+        }
+    }
+public:
+    RedirectTrace(){
+        dicts.resize(2);
+    }
+    void set(std::string const & key, std::string const & value){
+        std::lock_guard<std::mutex> lock(mutex);
+        dicts[1][key] = value;
+        rotate_and_clear();
+    }
+    std::string get(std::string const & key){
+        std::lock_guard<std::mutex> lock(mutex);
+        auto iter = dicts[1].find(key);
+        if(iter != dicts[1].end()){
+            return dicts[1][key];
+        }
+        iter = dicts[0].find(key);
+        if(iter != dicts[0].end()){
+            return dicts[0][key];
+        }
+        rotate_and_clear();
+        return "";
+    }
+};
+
+
+std::string search(boost::regex const & pattern, boost::asio::streambuf const & buf){
     typedef typename boost::asio::streambuf::const_buffers_type const_buffers_type;
     typedef boost::asio::buffers_iterator<const_buffers_type> iterator;
     const_buffers_type buffers = buf.data();
@@ -43,7 +83,7 @@ std::string search(boost::regex const & pattern, boost::asio::streambuf & buf){
         return match_results[0].str();
 }
 
-std::string encode(std::string const &src){
+std::string encode(std::string const & src){
     std::ostringstream t(std::ios::out | std::ios::binary);
     t << "'";
     std::ostream_iterator<char, char> oi(t);
@@ -51,6 +91,30 @@ std::string encode(std::string const &src){
     t << "'";
     return t.str();
 }
+
+std::string get_request_path(std::string const &in){
+    boost::regex pattern("^GET +(/[^ ]+)", boost::regex::perl);
+    boost::match_results<std::string::const_iterator> match_results;
+    boost::regex_search(in.begin(), in.end(), match_results, pattern);
+    auto url = match_results[1].str();
+    return url;
+}
+
+std::string get_302_location_path(boost::asio::streambuf const & buf){
+    boost::regex pattern{"HTTP/\\d\\.\\d +?302.+\r\nLocation: +http://[^/]+([^ \r\n]+)", boost::regex::perl};
+    typedef typename boost::asio::streambuf::const_buffers_type const_buffers_type;
+    typedef boost::asio::buffers_iterator<const_buffers_type> iterator;
+    const_buffers_type buffers = buf.data();
+    iterator begin = iterator::begin(buffers);
+    iterator end = iterator::end(buffers);
+    boost::match_results<iterator> match_results;
+    boost::regex_search(begin, end, match_results, pattern);
+    if(match_results[0].matched){
+        return match_results[1].str();
+    }
+    return "";
+}
+
 
 std::string convert_request_to_curl_cmd(std::string const & in){
     std::ostringstream out;
@@ -63,16 +127,17 @@ std::string convert_request_to_curl_cmd(std::string const & in){
     auto host = match_results[1].str();
     url = "http://" + host + url;
     out << "curl " << encode(url) << " ";
-    pattern = boost::regex("^[^:\r\n]+: +(?:[^\r\n]+)$", boost::regex::perl);
+    pattern = boost::regex("^([^:\r\n]+): +(?:[^\r\n]+)$", boost::regex::perl);
     auto start = in.cbegin();
     auto end = in.cend();
     while(boost::regex_search(start, end, match_results, pattern)){
         if(match_results[0].matched){
-            out << "-H " << encode(match_results.str()) << " ";
+            if(match_results[1].str() != "Host")
+                out << "-H " << encode(match_results.str()) << " ";
             start += match_results.position() + match_results.length();
         }
     }
-    out << "--compressed";
+    out << "--compressed ";
     return out.str();
 }
 
@@ -84,12 +149,15 @@ class RequestFilter{
     static const boost::regex request_pattern;
     static const boost::regex response_pattern;
     std::string request{};
+    static RedirectTrace redirect_trace;
 public:
     void add_request_content(std::vector<char> buf, std::size_t len){
         request_os.write(buf.data(), len);
         auto result = search(request_pattern, request_buf);
         if(result.length() > 0){
 //            std::cout << result << std::endl;
+//            auto path = get_request_path(result);
+//            std::cout << path << std::endl;
             request = result;
             request_buf.consume(request_buf.size());
         }
@@ -99,10 +167,28 @@ public:
     }
     void add_response_content(std::vector<char> buf, std::size_t len){
         response_os.write(buf.data(), len);
+        auto location_path = get_302_location_path(response_buf);
+        if(location_path.length() > 0){
+            if(request.length() > 0){
+                redirect_trace.set(location_path, std::move(request));
+                request = "";
+            }
+//            std::cout << location_path << std::endl;
+            request_buf.consume(request_buf.size());
+            response_buf.consume(response_buf.size());
+            return;
+        }
         auto result = search(response_pattern, response_buf);
         if(result.length() > 0){
             if(request.length() > 0){
-                std::cout << convert_request_to_curl_cmd(request) << std::endl;
+                auto path = get_request_path(request);
+                auto const & request_tmp = redirect_trace.get(path);
+                if(request_tmp.length() > 0){
+                    std::cout << convert_request_to_curl_cmd(request_tmp) << std::endl;
+                } else{
+                    std::cout << convert_request_to_curl_cmd(request) << std::endl;
+                }
+                request = "";
             }
             response_buf.consume(response_buf.size());
             request_buf.consume(request_buf.size());
@@ -114,6 +200,7 @@ public:
 };
 const boost::regex RequestFilter::request_pattern{"GET /.*HTTP/\\d\\.\\d\r\n.*\r\n\r\n", boost::regex::perl};
 const boost::regex RequestFilter::response_pattern{"Content-Disposition: +attachment; *filename=", boost::regex::perl};
+RedirectTrace RequestFilter::redirect_trace{};
 
 class Pipe : public std::enable_shared_from_this<Pipe>{
 public:
