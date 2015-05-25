@@ -188,6 +188,7 @@ public:
                 } else{
                     std::cout << convert_request_to_curl_cmd(request) << std::endl;
                 }
+		std::cout << std::endl;
                 request = "";
             }
             response_buf.consume(response_buf.size());
