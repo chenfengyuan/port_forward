@@ -152,6 +152,8 @@ class RequestFilter{
     static RedirectTrace redirect_trace;
 public:
     void add_request_content(std::vector<char> buf, std::size_t len){
+        if(request_buf.size() > 4096 * 3)
+            return;
         request_os.write(buf.data(), len);
         auto result = search(request_pattern, request_buf);
         if(result.length() > 0){
@@ -161,11 +163,13 @@ public:
             request = result;
             request_buf.consume(request_buf.size());
         }
-        if(request_buf.size() > 4096 * 3){
-            request_buf.consume(4096);
-        }
+//        if(request_buf.size() > 4096 * 3){
+//            request_buf.consume(request_buf.size() - 4096 * 2);
+//        }
     }
     void add_response_content(std::vector<char> buf, std::size_t len){
+        if (response_buf.size()  > 4096 * 3)
+            return;
         response_os.write(buf.data(), len);
         auto location_path = get_302_location_path(response_buf);
         if(location_path.length() > 0){
@@ -194,9 +198,9 @@ public:
             response_buf.consume(response_buf.size());
             request_buf.consume(request_buf.size());
         }
-        if(response_buf.size() > 4096 * 3){
-            response_buf.consume(4096);
-        }
+//        if(response_buf.size() > 4096 * 3){
+//            response_buf.consume(response_buf.size() - 4096 * 2);
+//        }
     }
 };
 const boost::regex RequestFilter::request_pattern{"GET /.*HTTP/\\d\\.\\d\r\n.*\r\n\r\n", boost::regex::perl};
@@ -218,7 +222,7 @@ void Pipe::start(){
     auto self = shared_from_this();
     auto read_and_write = [self, this](boost::asio::yield_context yield, socket & socket_src, socket & socket_dst, bool request_part){
 //        const boost::regex pattern("Content-Disposition: attachment;[^\r]+(?=\r\n)", boost::regex::perl);
-        const boost::regex pattern("GET /.*HTTP/\\d\\.\\d\r\n.*\r\n\r\n", boost::regex::perl);
+//        const boost::regex pattern("GET /.*HTTP/\\d\\.\\d\r\n.*\r\n\r\n", boost::regex::perl);
         std::vector<char> buf;
         buf.resize(4096);
         while(true){
