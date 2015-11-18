@@ -16,4 +16,7 @@ def ignore_closed_socket_error(func):
         except ConnectionResetError as e:
             if e.strerror != 'ConnectionResetError':
                 raise
+        except BrokenPipeError as e:
+            if e.strerror != 'Broken pipe':
+                raise
     return wrapper
