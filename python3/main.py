@@ -6,6 +6,6 @@ __author__ = 'chenfengyuan'
 
 
 monkey_patch.dummy()
-s = server.DirectServer('127.0.0.1', 9990, '127.0.0.1', 9991, client.DirectClient)
+s = server.SOCKS5Server('127.0.0.1', 9990, client.DirectClient)
 s.run()
 print('end')
