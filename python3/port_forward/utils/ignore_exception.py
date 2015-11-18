@@ -11,7 +11,9 @@ def ignore_closed_socket_error(func):
             return func(*args, **kwargs)
         except OSError as e:
             if e.strerror != 'File descriptor was closed in another greenlet' and \
-                    e.strerror != 'Bad file descriptor' and \
-                    e.strerror != 'ConnectionResetError':
+                    e.strerror != 'Bad file descriptor':
+                raise
+        except ConnectionResetError as e:
+            if e.strerror != 'ConnectionResetError':
                 raise
     return wrapper
