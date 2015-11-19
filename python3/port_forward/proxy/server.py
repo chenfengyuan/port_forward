@@ -15,24 +15,28 @@ class BaseServer:
     def run(self):
         raise NotImplementedError
 
-    def pipe(self, incoming_socket, outgoing_socket):
+    def pipe(self, incoming_socket, outgoing_socket, filter_):
         @ignore_closed_socket_error
-        def on_outgoing():
+        def on_incoming():
             while True:
                 data = incoming_socket.recv(self.BUFSIZE)
                 if not data:
                     outgoing_socket.close()
                     break
                 outgoing_socket.send(data)
+                if filter_:
+                    filter_.on_incoming_socket(data)
 
         @ignore_closed_socket_error
-        def on_incoming():
+        def on_outgoing():
             while True:
                 data = outgoing_socket.recv(self.BUFSIZE)
                 if not data:
                     incoming_socket.close()
                     break
                 incoming_socket.send(data)
+                if filter_:
+                    filter_.on_outgoing_socket(data)
         joinall((spawn(on_outgoing), spawn(on_incoming)))
 
 
@@ -56,7 +60,7 @@ class DirectServer(BaseServer):
         """
         del address
         client_socket = self.client_cls(self.dst_host, self.dst_port)
-        self.pipe(socket_, client_socket)
+        self.pipe(socket_, client_socket, None)
 
 
 class SOCKSError(RuntimeError):
@@ -65,9 +69,13 @@ class SOCKSError(RuntimeError):
 
 class SOCKS5Server(BaseServer):
 
-    def __init__(self, host, port, client_cls):
+    def __init__(self, host, port, client_cls, filter_cls=None):
+        self.host = host
+        self.port = port
         self.server = StreamServer((host, port), self.handle)
         self.client_cls = client_cls
+        self.filter_cls = filter_cls
+        self.filter = None
 
     def _socks5_establish_connection(self, socket_):
         # check SOCKS5 version
@@ -116,12 +124,14 @@ class SOCKS5Server(BaseServer):
         dst_port = struct.unpack("!H", dst_port_raw)[0]
         try:
             outgoing_socket = self.client_cls(dst_host, dst_port)
-        except OSError:
-            print(dst_host, dst_port)
+        except:
+            socket_.close()
+            raise
         socket_.send(b'\x05\x00\x00')
         socket_.send(dst_host_type)
         socket_.send(dst_host_raw)
         socket_.send(dst_port_raw)
+        self.filter = self.filter_cls((self.host, self.port), (dst_host, dst_port))
         return outgoing_socket
 
     def run(self):
@@ -134,5 +144,5 @@ class SOCKS5Server(BaseServer):
         """
         del address
         outgoing_socket = self._socks5_establish_connection(socket_)
-        self.pipe(socket_, outgoing_socket)
+        self.pipe(socket_, outgoing_socket, self.filter)
 
