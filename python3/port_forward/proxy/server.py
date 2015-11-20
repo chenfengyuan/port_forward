@@ -131,7 +131,8 @@ class SOCKS5Server(BaseServer):
         socket_.send(dst_host_type)
         socket_.send(dst_host_raw)
         socket_.send(dst_port_raw)
-        self.filter = self.filter_cls((self.host, self.port), (dst_host, dst_port))
+        if self.filter_cls:
+            self.filter = self.filter_cls((self.host, self.port), (dst_host, dst_port))
         return outgoing_socket
 
     def run(self):
