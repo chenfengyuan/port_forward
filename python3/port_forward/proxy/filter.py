@@ -55,13 +55,30 @@ def encode(s):
     return """'%s'""" % re.sub("'", """'"'"'""", s)
 
 
+class HttpRequest:
+    def __init__(self, url, headers):
+        self.url = url
+        self.headers = headers
+
+    def get_curl_cmd(self):
+        out = StringIO()
+        out.write("curl ")
+        out.write(encode(self.url))
+        for k, v in self.headers:
+            row = '%s: %s' % (k, v)
+            out.write(' -H ')
+            out.write(encode(row))
+        out.write(' --compressed')
+        return out.getvalue()
+
+
 class HTTPDownloadFilter(Filter):
 
     redirect_trace = lrucache(100)
 
     def __init__(self, incoming_addr, outgoing_addr):
         super(HTTPDownloadFilter, self).__init__(incoming_addr, outgoing_addr)
-        self.curl_request = None
+        self.request = None
 
     def on_data(self, new_incoming_data=None, new_outgoing_data=None):
         if new_incoming_data:
@@ -83,18 +100,10 @@ class HTTPDownloadFilter(Filter):
                 if not host:
                     self.deactive()
                     return
-                out = StringIO()
-                out.write("curl ")
-                out.write(encode("http://" + host + path))
-                for k, v in headers:
-                    row = '%s: %s' % (k, v)
-                    out.write(' -H ')
-                    out.write(encode(row))
-                out.write(" --compressed\n")
-                self.curl_request = out.getvalue()
+                self.request = HttpRequest("http://" + host + path, headers)
                 return
         elif new_outgoing_data:
-            if not self.curl_request:
+            if not self.request:
                 return
             if b'\r\n\r\n' in self.outging_data:
                 fp = StringIO(self.outging_data[:self.outging_data.find(b'\r\n\r\n')].decode('utf-8'))
@@ -104,10 +113,9 @@ class HTTPDownloadFilter(Filter):
                     m = message_from_file(fp)
                     content_disposition = m.get('Content-Disposition')
                     if content_disposition and 'filename' in content_disposition:
-                        if self.curl_request:
-                            print(self.curl_request)
+                        if self.request:
+                            print(self.request.get_curl_cmd())
                 return self.deactive()
 
     def on_the_end(self):
         self.on_data()
-

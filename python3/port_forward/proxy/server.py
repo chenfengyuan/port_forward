@@ -6,6 +6,7 @@ from socket import socket
 import ipaddress
 import struct
 from port_forward.utils.ignore_exception import ignore_closed_socket_error
+from port_forward.utils.logger import logger
 __author__ = 'chenfengyuan'
 
 
@@ -78,6 +79,9 @@ class SOCKS5Server(BaseServer):
         self.filter = None
 
     def _socks5_establish_connection(self, socket_):
+        """
+        :type socket_: socket
+        """
         # check SOCKS5 version
         data = socket_.recv(1)
         if data != b'\x05':
@@ -124,6 +128,13 @@ class SOCKS5Server(BaseServer):
         dst_port = struct.unpack("!H", dst_port_raw)[0]
         try:
             outgoing_socket = self.client_cls(dst_host, dst_port)
+        except OSError as e:
+            if e.strerror == 'No route to host':
+                logger.info("can't connect to %s", (dst_host, dst_port))
+                socket_.close()
+                return
+            else:
+                raise
         except:
             socket_.close()
             raise
@@ -146,4 +157,3 @@ class SOCKS5Server(BaseServer):
         del address
         outgoing_socket = self._socks5_establish_connection(socket_)
         self.pipe(socket_, outgoing_socket, self.filter)
-
