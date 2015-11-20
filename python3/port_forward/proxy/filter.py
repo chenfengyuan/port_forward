@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 # coding=utf-8
+from io import StringIO
+from email import message_from_file
+from pylru import lrucache
+import re
 __author__ = 'chenfengyuan'
 
 
@@ -18,38 +22,91 @@ class Filter:
         self.on_incoming_socket = self._on_incoming_socket
         self.on_outgoing_socket = self._on_outgoing_socket
 
+    def deactive(self):
+        self.active = False
+        self.incoming_data = bytearray()
+        self.outging_data = bytearray()
+        self.on_incoming_socket = self._dummy
+        self.on_outgoing_socket = self._dummy
+
     def deactive_if_need(self):
         if (len(self.incoming_data) > self.MAX_SIZE) or \
                 (len(self.outging_data) > self.MAX_SIZE):
-            self.active = False
-            self.incoming_data = bytearray()
-            self.outging_data = bytearray()
+            self.deactive()
 
     def _on_incoming_socket(self, data):
         self.incoming_data += data
-        self.on_data()
+        self.on_data(new_incoming_data=data)
         self.deactive_if_need()
 
-    def on_data(self):
+    def on_data(self, new_incoming_data=None, new_outgoing_data=None):
         pass
 
     def _on_outgoing_socket(self, data):
         self.outging_data += data
-        self.on_data()
+        self.on_data(new_outgoing_data=data)
         self.deactive_if_need()
 
     def on_the_end(self):
         pass
 
 
+def encode(s):
+    return """'%s'""" % re.sub("'", """'"'"'""", s)
+
+
 class HTTPDownloadFilter(Filter):
+
+    redirect_trace = lrucache(100)
 
     def __init__(self, incoming_addr, outgoing_addr):
         super(HTTPDownloadFilter, self).__init__(incoming_addr, outgoing_addr)
+        self.curl_request = None
 
-    def on_data(self):
-        print(self.incoming_data)
-        print(self.outging_data)
+    def on_data(self, new_incoming_data=None, new_outgoing_data=None):
+        if new_incoming_data:
+            if len(self.incoming_data) >= 4:
+                if self.incoming_data[:4] != b'GET ':
+                    return self.deactive()
+            if b'\r\n\r\n' in self.incoming_data:
+                fp = StringIO(self.incoming_data.decode('utf-8'))
+                request_line = fp.readline()
+                command, path, version = request_line.split(maxsplit=2)
+                m = message_from_file(fp)
+                headers = m.items()
+                # payload = m.get_payload()
+                host = None
+                for k, v in headers:
+                    if k.lower() == 'host':
+                        host = v
+                        break
+                if not host:
+                    self.deactive()
+                    return
+                out = StringIO()
+                out.write("curl ")
+                out.write(encode("http://" + host + path))
+                for k, v in headers:
+                    row = '%s: %s' % (k, v)
+                    out.write(' -H ')
+                    out.write(encode(row))
+                out.write(" --compressed\n")
+                self.curl_request = out.getvalue()
+                return
+        elif new_outgoing_data:
+            if not self.curl_request:
+                return
+            if b'\r\n\r\n' in self.outging_data:
+                fp = StringIO(self.outging_data[:self.outging_data.find(b'\r\n\r\n')].decode('utf-8'))
+                response_line = fp.readline()
+                version, status_code, status_message = response_line.split(maxsplit=2)
+                if status_code != 200:
+                    m = message_from_file(fp)
+                    content_disposition = m.get('Content-Disposition')
+                    if content_disposition and 'filename' in content_disposition:
+                        if self.curl_request:
+                            print(self.curl_request)
+                return self.deactive()
 
     def on_the_end(self):
         self.on_data()
