@@ -79,6 +79,7 @@ class HTTPDownloadFilter(Filter):
     def __init__(self, incoming_addr, outgoing_addr):
         super(HTTPDownloadFilter, self).__init__(incoming_addr, outgoing_addr)
         self.request = None
+        self.request_url = None
 
     def on_data(self, new_incoming_data=None, new_outgoing_data=None):
         if new_incoming_data:
@@ -100,7 +101,11 @@ class HTTPDownloadFilter(Filter):
                 if not host:
                     self.deactive()
                     return
-                self.request = HttpRequest("http://" + host + path, headers)
+                self.request_url = "http://" + host + path
+                if self.request_url in self.redirect_trace:
+                    self.request = self.redirect_trace[self.request_url]
+                else:
+                    self.request = HttpRequest(self.request_url, headers)
                 return
         elif new_outgoing_data:
             if not self.request:
@@ -109,12 +114,18 @@ class HTTPDownloadFilter(Filter):
                 fp = StringIO(self.outging_data[:self.outging_data.find(b'\r\n\r\n')].decode('utf-8'))
                 response_line = fp.readline()
                 version, status_code, status_message = response_line.split(maxsplit=2)
-                if status_code != 200:
+                if status_code == '200':
                     m = message_from_file(fp)
                     content_disposition = m.get('Content-Disposition')
                     if content_disposition and 'filename' in content_disposition:
                         if self.request:
                             print(self.request.get_curl_cmd())
+                            print('')
+                elif status_code == '302':
+                    m = message_from_file(fp)
+                    location = m.get('Location')
+                    if location:
+                        self.redirect_trace[location] = self.request
                 return self.deactive()
 
     def on_the_end(self):
