@@ -3,3 +3,5 @@ gevent==1.1rc1
 ipython
 flask
 pylru==1.0.9
+https://github.com/BayanGroup/expiringdict/archive/master.zip
+zmq

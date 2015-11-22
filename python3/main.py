@@ -7,5 +7,6 @@ __author__ = 'chenfengyuan'
 
 
 monkey_patch.dummy()
+filter_util.HTTPDownloadFilter.start_server('127.0.0.1', 9991)
 s = server.SOCKS5Server('127.0.0.1', 9990, client.DirectClient, filter_util.HTTPDownloadFilter)
 s.run()

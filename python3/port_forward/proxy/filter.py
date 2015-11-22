@@ -4,6 +4,8 @@ from io import StringIO
 from email import message_from_file
 from pylru import lrucache
 import re
+import os.path
+import urllib.parse
 __author__ = 'chenfengyuan'
 
 
@@ -55,10 +57,21 @@ def encode(s):
     return """'%s'""" % re.sub("'", """'"'"'""", s)
 
 
-class HttpRequest:
-    def __init__(self, url, headers):
+def get_filename(s):
+    s = re.findall('filename="?([^"]+)"?', s)
+    if not s:
+        return None
+    return os.path.basename(urllib.parse.unquote(s[0]))
+
+
+class HttpDownload:
+    __fields__ = ['url', 'headers', 'content_length', 'filename']
+
+    def __init__(self, url, headers, content_length=None, filename=None):
         self.url = url
         self.headers = headers
+        self.content_length = content_length
+        self.filename = filename
 
     def get_curl_cmd(self):
         out = StringIO()
@@ -71,15 +84,26 @@ class HttpRequest:
         out.write(' --compressed')
         return out.getvalue()
 
+    def __repr__(self):
+        return "HttpDownload(%s, %s, %s, %s)" % (repr(self.url), repr(self.headers),
+                                                 repr(self.content_length), repr(self.filename))
+
+    def get_dict(self):
+        rv = {}
+        for k in self.__fields__:
+            rv[k] = getattr(self, k)
+        return rv
+
 
 class HTTPDownloadFilter(Filter):
 
     redirect_trace = lrucache(100)
+    download_num = 0
+    downloads = lrucache(100)
 
     def __init__(self, incoming_addr, outgoing_addr):
         super(HTTPDownloadFilter, self).__init__(incoming_addr, outgoing_addr)
-        self.request = None
-        self.request_url = None
+        self.download = None
 
     def on_data(self, new_incoming_data=None, new_outgoing_data=None):
         if new_incoming_data:
@@ -101,14 +125,14 @@ class HTTPDownloadFilter(Filter):
                 if not host:
                     self.deactive()
                     return
-                self.request_url = "http://" + host + path
-                if self.request_url in self.redirect_trace:
-                    self.request = self.redirect_trace[self.request_url]
+                request_url = "http://" + host + path
+                if request_url in self.redirect_trace:
+                    self.download = self.redirect_trace[request_url]
                 else:
-                    self.request = HttpRequest(self.request_url, headers)
+                    self.download = HttpDownload(request_url, headers)
                 return
         elif new_outgoing_data:
-            if not self.request:
+            if not self.download:
                 return
             if b'\r\n\r\n' in self.outging_data:
                 fp = StringIO(self.outging_data[:self.outging_data.find(b'\r\n\r\n')].decode('utf-8'))
@@ -117,16 +141,53 @@ class HTTPDownloadFilter(Filter):
                 if status_code == '200':
                     m = message_from_file(fp)
                     content_disposition = m.get('Content-Disposition')
-                    if content_disposition and 'filename' in content_disposition:
-                        if self.request:
-                            print(self.request.get_curl_cmd())
+                    content_length = m.get('Content-Length')
+                    if content_length and content_disposition:
+                        content_length = int(content_length)
+                        filename = get_filename(content_disposition)
+                        if content_length and filename:
+                            self.download.content_length = content_length
+                            self.download.filename = filename
                             print('')
+                            print('# %s %s' % (self.add_download(self.download), self.download.filename))
+                            print(self.download.get_curl_cmd())
                 elif status_code == '302':
                     m = message_from_file(fp)
                     location = m.get('Location')
                     if location:
-                        self.redirect_trace[location] = self.request
+                        self.redirect_trace[location] = self.download
                 return self.deactive()
 
     def on_the_end(self):
         self.on_data()
+
+    @classmethod
+    def add_download(cls, download):
+        """
+        :type download: HttpDownload
+        """
+        num = cls.download_num
+        cls.downloads[num] = download
+        cls.download_num += 1
+        return num
+
+    @classmethod
+    def get_download(cls, num):
+        return cls.downloads[num].get_dict()
+
+    @classmethod
+    def start_server(cls, host, port):
+        import zmq.green as zmq
+        import json
+        import gevent
+
+        def server():
+            context = zmq.Context()
+            socket = context.socket(zmq.REP)
+            socket.bind("tcp://%s:%s" % (host, port))
+
+            while True:
+                num = int(socket.recv())
+                data = json.dumps(cls.get_download(num))
+                socket.send(data.encode('utf-8'))
+        return gevent.spawn(server)
