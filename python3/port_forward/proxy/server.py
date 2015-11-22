@@ -43,13 +43,14 @@ class BaseServer:
 
 class DirectServer(BaseServer):
 
-    def __init__(self, host, port, dst_host, dst_port, client_cls):
+    def __init__(self, host, port, dst_host, dst_port, client_cls, filter_cls=None):
         self.host = host
         self.port = port
         self.dst_host = dst_host
         self.dst_port = dst_port
         self.client_cls = client_cls
         self.server = StreamServer((host, port), self.handle)
+        self.filter_cls = filter_cls
 
     def run(self):
         self.server.serve_forever()
@@ -61,7 +62,10 @@ class DirectServer(BaseServer):
         """
         del address
         client_socket = self.client_cls(self.dst_host, self.dst_port)
-        self.pipe(socket_, client_socket, None)
+        filter_ = None
+        if self.filter_cls:
+            filter_ = self.filter_cls()
+        self.pipe(socket_, client_socket, filter_)
 
 
 class SOCKSError(RuntimeError):

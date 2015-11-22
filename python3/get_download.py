@@ -21,8 +21,10 @@ def client(host, port, num):
 
 
 def main():
-    num = sys.argv[1].encode('utf-8')
-    client('127.0.0.1', 9991, num)
+    host = sys.argv[1]
+    port = int(sys.argv[2])
+    num = sys.argv[3].encode('utf-8')
+    client(host, port, num)
 
 if __name__ == '__main__':
     main()

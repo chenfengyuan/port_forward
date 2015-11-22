@@ -191,3 +191,14 @@ class HTTPDownloadFilter(Filter):
                 data = json.dumps(cls.get_download(num))
                 socket.send(data.encode('utf-8'))
         return gevent.spawn(server)
+
+
+class DebugFilter:
+
+    def on_incoming_socket(self, data):
+        del self
+        print(b'i:%s' % data)
+
+    def on_outgoing_socket(self, data):
+        del self
+        print(b'o:%s' % data)
