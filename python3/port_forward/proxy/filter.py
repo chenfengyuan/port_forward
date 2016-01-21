@@ -173,7 +173,10 @@ class HTTPDownloadFilter(Filter):
 
     @classmethod
     def get_download(cls, num):
-        return cls.downloads[num].get_dict()
+        if num in cls.downloads:
+            return cls.downloads[num].get_dict()
+        else:
+            return {}
 
     @classmethod
     def start_server(cls, host, port):
@@ -187,7 +190,11 @@ class HTTPDownloadFilter(Filter):
             socket.bind("tcp://%s:%s" % (host, port))
 
             while True:
-                num = int(socket.recv())
+                try:
+                    num = int(socket.recv())
+                except (TypeError, ValueError):
+                    socket.send(b'{}')
+                    continue
                 data = json.dumps(cls.get_download(num))
                 socket.send(data.encode('utf-8'))
         return gevent.spawn(server)
